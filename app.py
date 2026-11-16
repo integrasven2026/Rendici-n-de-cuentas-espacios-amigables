@@ -75,6 +75,9 @@ with col_header_title:
 
 with col_header_logo:
     posibles_nombres = [
+        'AICS.LOGO.jpg',
+        'aics.logo.jpg',
+        'AICS.LOGO.png',
         'coopi.jpg',
         'coopi.jpeg',
         'COOPI.jpg',
@@ -85,6 +88,14 @@ with col_header_logo:
         'INTEGRAS.png',
     ]
     logo_path = next((n for n in posibles_nombres if os.path.exists(n)), None)
+
+    if not logo_path:
+        imagenes_repo = [
+            f for f in os.listdir('.')
+            if f.lower().endswith(('.jpg', '.jpeg', '.png'))
+        ]
+        if imagenes_repo:
+            logo_path = imagenes_repo[0]
 
     if logo_path:
         try:
@@ -102,13 +113,11 @@ st.markdown('---')
 KOBO_SERVER = 'https://eu.kobotoolbox.org'
 FORM_UID = 'aN3EQDFths7wXuRksh4Mdm'
 
-# Prioriza st.secrets para producción; usa el token provisto como respaldo local
 try:
     KOBO_API_TOKEN = st.secrets['KOBO_TOKEN']
 except Exception:
     KOBO_API_TOKEN = 'eb8497fd084a4fb456a5449e10987a9e341751c1'
 
-# Metas globales del proyecto según Marco Lógico
 META_PARTICIPANTES_SERVICIOS = 6500
 META_PARTICIPANTES_UNICOS = 4500
 
@@ -196,16 +205,10 @@ def clasificar_servicio_proteccion(id_act, actividad_texto):
 
 
 def buscar_valor_columna(row_dict, candidatos, default=''):
-    """
-    Busca un valor en el diccionario de Kobo considerando que los nombres
-    de campo pueden traer prefijos de grupo (ej. 'grupo_datos/Estado').
-    """
-    # 1. Coincidencia exacta
     for cand in candidatos:
         if cand in row_dict and row_dict[cand] not in (None, ''):
             return row_dict[cand]
 
-    # 2. Coincidencia por sufijo después de '/' (insensible a mayúsculas)
     claves_lower = {k.lower(): k for k in row_dict.keys()}
     for cand in candidatos:
         cand_l = cand.lower()
@@ -222,7 +225,6 @@ def buscar_valor_columna(row_dict, candidatos, default=''):
 
 
 def calcular_rango_etario(edad_val):
-    """Calcula el rango etario estándar si el formulario captura edad numérica."""
     try:
         edad = int(float(edad_val))
         if edad <= 4:
@@ -238,7 +240,7 @@ def calcular_rango_etario(edad_val):
 
 
 # -----------------------------------------------------------------------------
-# 2. CARGA DE DATOS DESDE API KOBOTOOLBOX (CON PAGINACIÓN Y SOPORTE REPEAT)
+# 2. CARGA DE DATOS DESDE API KOBOTOOLBOX
 # -----------------------------------------------------------------------------
 @st.cache_data(ttl=600, show_spinner='Sincronizando registros con KoboToolbox...')
 def cargar_datos_kobo(server_url, form_uid, api_token):
@@ -260,7 +262,7 @@ def cargar_datos_kobo(server_url, form_uid, api_token):
             payload = resp.json()
             resultados = payload.get('results', [])
             todos_los_envios.extend(resultados)
-            url = payload.get('next')  # Paginación automática si hay > 1000 envíos
+            url = payload.get('next')
     except requests.exceptions.RequestException as e:
         st.error(f'❌ Error de conexión con KoboToolbox: {e}')
         return pd.DataFrame(), []
@@ -268,19 +270,16 @@ def cargar_datos_kobo(server_url, form_uid, api_token):
     if not todos_los_envios:
         return pd.DataFrame(), []
 
-    # Desanidar grupos repetitivos (begin_repeat) si existen en el envío
     filas_aplanadas = []
     columnas_detectadas = set()
 
     for envio in todos_los_envios:
-        # Detectar campos que sean listas de diccionarios (grupos repetitivos en Kobo)
         campos_repeat = [
             k for k, v in envio.items()
             if isinstance(v, list) and len(v) > 0 and isinstance(v[0], dict)
         ]
 
         if campos_repeat:
-            # Toma el primer grupo repetitivo (ej. group_beneficiario) y hereda campos padre
             nombre_repeat = campos_repeat[0]
             datos_padre = {k: v for k, v in envio.items() if k not in campos_repeat}
             for item_rep in envio[nombre_repeat]:
@@ -293,7 +292,6 @@ def cargar_datos_kobo(server_url, form_uid, api_token):
 
     registros = []
     for idx, row in enumerate(filas_aplanadas):
-        # Identificador único del envío / participante
         kobo_id = str(row.get('_id') or f'KOBO_{idx}').strip()
         codigo_id = str(
             buscar_valor_columna(
@@ -303,14 +301,12 @@ def cargar_datos_kobo(server_url, form_uid, api_token):
             )
         ).strip()
 
-        # Fecha de actividad o fecha de envío
         fecha = buscar_valor_columna(
             row,
             ['fecha_actividad', 'Fecha de la Actividad', 'fecha', 'start', '_submission_time'],
             default=None,
         )
 
-        # Ubicación geográfica
         estado_raw = str(
             buscar_valor_columna(row, ['estado', 'Estado', 'admin1'], default='')
         ).strip()
@@ -325,12 +321,10 @@ def cargar_datos_kobo(server_url, form_uid, api_token):
             buscar_valor_columna(row, ['parroquia', 'Parroquia', 'admin3', 'comunidad'], default='No especificado')
         ).strip().replace('_', ' ')
 
-        # Organización / Socio
         organizacion = str(
             buscar_valor_columna(row, ['organizacion', 'Organización', 'socio', 'implementador'], default='COOPI')
         ).strip()
 
-        # Resultado / Sector
         id_resul_val = str(
             buscar_valor_columna(row, ['id_resultado', 'ID Resultado', 'resultado_cod'], default='')
         ).strip().upper()
@@ -349,7 +343,6 @@ def cargar_datos_kobo(server_url, form_uid, api_token):
         else:
             sector = resultado_raw if resultado_raw else 'R1. Protección'
 
-        # Actividad e Indicador
         id_act = str(
             buscar_valor_columna(row, ['id_actividad', 'ID Actividad', 'codigo_actividad'], default='')
         ).strip()
@@ -362,7 +355,6 @@ def cargar_datos_kobo(server_url, form_uid, api_token):
 
         tipo_serv = clasificar_servicio_proteccion(id_act, actividad_texto)
 
-        # Desagregación demográfica
         val_sexo = str(
             buscar_valor_columna(row, ['sexo', 'Sexo', 'genero', 'Genero'], default='Mujer')
         ).strip().title()
@@ -387,7 +379,6 @@ def cargar_datos_kobo(server_url, form_uid, api_token):
             'Sí' if any(x in val_disc for x in ['sí', 'si', 'yes', 'true', '1']) else 'No'
         )
 
-        # Cantidad de atenciones (por si el formulario es agregado o individual)
         try:
             cant_atenciones = int(float(buscar_valor_columna(row, ['total_participantes', 'cantidad', 'beneficiarios'], default=1)))
             if cant_atenciones < 1:
@@ -415,12 +406,10 @@ def cargar_datos_kobo(server_url, form_uid, api_token):
 
     df = pd.DataFrame(registros)
 
-    # Cálculo dinámico de Beneficiarios Únicos (General, por Resultado y por Actividad)
     if not df.empty:
         df['Fecha_DT'] = pd.to_datetime(df['Fecha'], errors='coerce')
         df = df.sort_values(by=['Fecha_DT', 'Case_ID'], na_position='last').reset_index(drop=True)
 
-        # Si el formulario ya trae columnas explícitas de únicos, se respetan; si no, se deduplica por Case_ID
         df['Unicos_General'] = (~df.duplicated(subset=['Case_ID'])).astype(int)
         df['Unicos_Resultado'] = (~df.duplicated(subset=['Case_ID', 'Sector'])).astype(int)
         df['Unicos_Actividad'] = (~df.duplicated(subset=['Case_ID', 'Actividad_Texto'])).astype(int)
@@ -451,7 +440,6 @@ if st.sidebar.button('🔄 Actualizar Datos desde Kobo', width='stretch'):
 st.sidebar.caption(f'🟢 Conectado a KoboToolbox (`{FORM_UID}`)')
 st.sidebar.markdown('---')
 
-# Orden cronológico de meses
 meses_df = (
     df_raw[['Mes_Orden', 'Mes_Reporte']]
     .drop_duplicates()
@@ -475,7 +463,6 @@ rango_sel = st.sidebar.selectbox('Rango Etario:', rango_disp, index=0)
 disc_disp = ['Todos', 'Sí', 'No']
 disc_sel = st.sidebar.selectbox('Persona con Discapacidad:', disc_disp, index=0)
 
-# Auditoría técnica opcional de campos del formulario XLSForm
 with st.sidebar.expander('🔍 Ver campos detectados en Kobo'):
     campos_limpios = [c for c in cols_kobo if not c.startswith('_') and not c.startswith('meta/')]
     st.write(campos_limpios)
@@ -524,7 +511,6 @@ conteo_disc = (
 )
 total_discapacidad = int(conteo_disc.get('Sí', 0))
 
-# Participantes únicos por Resultado
 total_unicos_r1 = int(
     df_filtered[df_filtered['Sector'] == 'R1. Protección']['Unicos_Resultado'].sum()
 )
